@@ -1,0 +1,180 @@
+%% Ultrasound simulation for measuring the pulse-echo of the thin film system
+% Water (1mm) --> film (in mm to um) --> water (1mm)
+% The silulation can modified to test differnt multilayer structure
+% Water (1mm) -> Glass (1mm) --> film (in mm to um) --> Glass (1mm)
+clear; close all; clc;
+%% Parameters
+f0 = 10e6;          
+
+% Acoustic properties of materials
+c_water = 1500;
+c_film = 2600;
+c_glass = 4200;     
+
+rho_water = 1000;
+rho_film = 1200;
+rho_glass = 2500;   
+
+% Layer geometry
+water_thickness = 1e-3;
+film_thickness = .5e-3;
+glass_one_thickness = 1e-3;
+glass_two_thickness = 1e-3;
+source_position = 1;       % Source position in grid points(this should be not overlap with the PML)
+
+%% Grid parameters
+dx = 1e-6;
+
+% Calculate minimum required grid size
+total_thickness = water_thickness +film_thickness+water_thickness; % --> this is for film between two layer of water
+%total_thickness = water_thickness + glass_one_thickness+film_thickness+glass_two_thickness;
+min_grid_points = ceil(total_thickness / dx); % ceil is the function rounds each element of X to the nearest integer
+
+% Ensure grid is large enough for all layers
+Nx = max(min_grid_points);
+kgrid = kWaveGrid(Nx, dx);
+
+%% Medium properties 
+medium.sound_speed = c_water * ones(Nx, 1);
+medium.density = rho_water * ones(Nx, 1);
+
+% Define layer boundaries with validation
+water_start = 1;
+water_end = (round(water_thickness/dx));
+
+% glass_start = water_end;
+% glass_end = (glass_start + round(glass_one_thickness / dx));
+
+film_start = water_end;
+film_end = film_start + round(film_thickness / dx);
+
+glass_two_start = film_end;
+glass_two_end = glass_two_start+round(glass_two_thickness/dx);
+
+% Set Glass layer properties (if within grid bounds)
+% medium.sound_speed(glass_start:glass_end) = c_glass;
+% medium.density(glass_start:glass_end) = rho_glass;
+
+medium.sound_speed(film_start:film_end) = c_film;
+medium.density(film_start:film_end) = rho_film;
+
+% medium.sound_speed(glass_two_start:glass_two_end) = c_glass;
+% medium.density(glass_two_start:glass_two_end) = rho_glass;
+
+% Here i chnage the glass to water prepertes since the glass and water have
+% the same thickness
+medium.sound_speed(glass_two_start:glass_two_end) = c_water;
+medium.density(glass_two_start:glass_two_end) = rho_water;
+
+% Attenuation setup (in dB/(MHz^y·cm))
+medium.alpha_coeff = zeros(Nx,1);
+medium.alpha_power = 1.5;
+
+% Water
+medium.alpha_coeff(water_start:water_end) = 0.0022;  % dB/(MHz^2·cm)
+
+% Glass
+% medium.alpha_coeff(glass_start:glass_end) = 0.1;  % dB/(MHz·cm)
+
+% oil
+medium.alpha_coeff(film_start:film_end) = 0.05;  % dB/(MHz·cm)
+
+% glass_two
+% medium.alpha_coeff(glass_two_start:glass_two_end) = 0.1;  % dB/(MHz·cm)
+% glass_two change to the glass just for test
+medium.alpha_coeff(glass_two_start:glass_two_end) = 0.0022;  % dB/(MHz·cm)
+
+%% Time array
+% Calculate expected echo times for different interfaces
+% distance_water_glass = (water_end+8) * dx; % - source_position
+% expected_echo_water_glass = 2 * distance_water_glass / c_water;
+
+% distance_glass_end = (glass_end- source_position) * dx; 
+% expected_echo_glass_end = 2 * distance_glass_end / c_glass;
+
+distance_oil = (film_end-source_position)*dx; 
+expected_Echo_oil = 2*distance_oil/c_film;% --> time measurement of the echo coming from the film, this what we are interested to simulate
+
+% distance_glass_two = (glass_two_end - source_position) * dx; 
+% expected_echo_glass_two = 2 * distance_glass_two / c_glass;
+
+
+% Use maximum sound speed for stability
+c_max = max([c_water, c_glass, c_film]);
+t_end = expected_Echo_oil * 2; % Extended for multiple echoes
+kgrid.t_array = makeTime(kgrid, c_max, 0.3, t_end);
+
+%% Source definition
+source.p_mask = zeros(Nx, 1);
+source.p_mask(source_position) = 1;
+
+tone_burst_cycles = 1;
+input_signal = toneBurst(1/kgrid.dt, f0, tone_burst_cycles);
+source.p = input_signal;
+
+%% Gaussion pulse generater
+% Generate a Gaussian pulse for the source signal
+%pulse_duration = 1e-6; % Duration of the pulse in seconds
+%source.p = gausswin(round(pulse_duration / kgrid.dt)) .* input_signal;
+%% Sensor definition
+sensor.mask = zeros(Nx, 1);
+sensor.mask(source_position) = 1;
+sensor.record = {'p'};
+
+%% Run simulation with animation
+fprintf('\nRunning simulation...\n');
+input_args = {
+    'PMLInside', false, ...
+    'PMLSize', 10, ...
+    'DataCast', 'single', ...
+    'PlotSim', true, ...
+    'PlotLayout', true ...
+    };
+
+sensor_data = kspaceFirstOrder1D(kgrid, medium, source, sensor, input_args{:});
+echo_signal = sensor_data.p;
+
+fprintf('Simulation completed!\n');
+%% plot the simulated echo signal from the sensor
+figure;
+plot(kgrid.t_array, echo_signal);
+%% ------ uncomment below code if you want to make the FFt analysis ------%%
+% %% filttering the echo_signal by time window
+% % Apply a time window to filter the echo signal
+% timeWindow = kgrid.t_array >= 2.4e-6 & kgrid.t_array <= 2.6e-6;
+% % select the timeWindow and make the rest value zeros
+% gated_echo_signal = zeros(size(echo_signal));   % same size as original
+% gated_echo_signal(timeWindow) = echo_signal(timeWindow);
+% % Plot the filtered echo signal
+% figure;
+% plot(kgrid.t_array, gated_echo_signal);
+% xlabel('Time (s)');
+% ylabel('Amplitude');
+% title('Filtered Echo Signal');
+% %% Amplitude spectrum
+% x = gated_echo_signal(:);  
+% N = length(x);
+% Fs = 1/kgrid.dt;
+% Y = fft(x);
+% 
+% % Use only positive half
+% Yp = Y(1:floor(N/2));
+% 
+% % Direct amplitude
+% A = (2/N) * abs(Yp); 
+% 
+% % Frequency axis
+% f = ((0:length(A)-1)*(Fs/N)).';
+% 
+% % Plot
+% figure; plot(f, A);
+% xlabel('Frequency (Hz)');
+% ylabel('Amplitude');
+% xlim([0,50000000])
+% title('Amplitude Spectrum');
+% grid on;
+% 
+% %% export the amplitude data as freq function
+% % Export the amplitude data as a frequency function
+% t = kgrid.t_array;
+% csvwrite('water_glass_film_data.csv', [t.' x]);
